@@ -1,0 +1,74 @@
+name: Auto Sync Fork (Every 5 Mins)
+
+on:
+  schedule:
+    # Se ejecuta cada 5 minutos
+    - cron: '*/5 * * * *'
+  # Permite ejecutarlo manualmente desde la pestaña "Actions"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout del repositorio
+        uses: actions/checkout@v4
+        with:
+          # Necesitamos el historial completo (fetch-depth: 0) para que Git pueda comparar y fusionar
+          fetch-depth: 0
+
+      - name: Configurar Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Detectar Upstream, Hacer Pull y Push
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "=> Consultando la API de GitHub para encontrar el repositorio original..."
+          
+          # Usamos la API de GitHub CLI para obtener la URL original de la que se hizo el fork
+          UPSTREAM_URL=$(gh api repos/${{ github.repository }} --jq '.parent.clone_url')
+          
+          if [ -z "$UPSTREAM_URL" ] || [ "$UPSTREAM_URL" == "null" ]; then
+            echo "❌ ERROR: Este repositorio no parece ser un fork. No se encontró un upstream."
+            exit 1
+          fi
+          
+          echo "=> Repositorio original detectado: $UPSTREAM_URL"
+          
+          # Añadimos el repositorio original como remoto bajo el nombre "upstream"
+          git remote add upstream "$UPSTREAM_URL"
+          
+          echo "=> Descargando cambios del repositorio original..."
+          git fetch upstream
+          
+          # Obtenemos el nombre de la rama actual (ej: main o master)
+          CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+          echo "=> Rama actual: $CURRENT_BRANCH"
+          
+          echo "=> Intentando fusionar (merge) upstream/$CURRENT_BRANCH en la rama actual..."
+          
+          # Hacemos el merge. Si hay un conflicto, el script entrará al bloque "else"
+          if git merge "upstream/$CURRENT_BRANCH" --no-edit; then
+            echo "✅ Merge exitoso (o ya estaba actualizado)."
+            
+            # Verificamos si realmente hay commits nuevos para subir a nuestro origin
+            if ! git diff --quiet origin/$CURRENT_BRANCH..$CURRENT_BRANCH; then
+              echo "=> Subiendo nuevos cambios a este repositorio..."
+              git push origin HEAD:$CURRENT_BRANCH
+            else
+              echo "=> Tu fork ya está sincronizado. No hay nada nuevo que subir."
+            fi
+            
+          else
+            echo "❌ ERROR: Hay conflictos entre tu fork y el original que no se pueden resolver automáticamente."
+            echo "=> Abortando el merge para no dañar el código..."
+            git merge --abort
+            exit 1
+          fi
